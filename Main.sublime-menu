@@ -1,0 +1,27 @@
+[
+    {
+        "caption": "Tools",
+        "mnemonic": "T",
+        "id": "tools",
+        "children":
+        [
+            {
+                "caption": "SublimeTogether",
+                "children":
+                [
+                    { "command": "sublime_together_connect", "caption": "Connect to server" },
+                    { "command": "sublime_together_disconnect", "caption": "Disconnect from server" },
+                    { "caption": "-" },
+                    {
+                        "caption": "Settings...",
+                        "command": "open_file",
+                        "args": {
+                            "file": "${packages}/User/SublimeTogether.sublime-settings"
+                        }
+                    }
+                ]
+            }
+
+        ]
+    }
+]
