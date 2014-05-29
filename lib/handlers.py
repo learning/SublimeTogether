@@ -10,10 +10,10 @@ def error_handler(arg):
     print('[SublimeTogether Error]: Unknow command %s' % hex(arg['data']))
 
 def message_handler(arg):
-    sublime.active_window().active_view().run_command('sublime_together_chat_insert', {'text': '%s\n' % arg['data'].decode()})
+    sublime.active_window().active_view().run_command('sublime_together_chat_insert', {'text': '%s\n' % arg['data']})
 
 def change_selection_handler(arg):
-    data = json.loads(arg['data'].decode())
+    data = arg['data']
     if data['path'] in arg['path_views']:
         client = data['client']
         view = arg['path_views'][data['path']]
@@ -25,23 +25,13 @@ def change_selection_handler(arg):
             SELECTION_SCOPE.format(client), SELECTION_ICON, SELECTION_STYLE)
 
 def edit_file_handler(arg):
-    data = json.loads(arg['data'].decode())
+    data = arg['data']
+    print('edit_file_handler', data['path'] in arg['path_views'])
     if data['path'] in arg['path_views']:
         client = data['client']
         view = arg['path_views'][data['path']]
-        patch_text = data['patch']
+        patches_text = data['patch']
         view.run_command('sublime_together_edit_file', {
             'client': client,
-            'patch_text': patch_text
+            'patches_text': patches_text
             })
-
-class SublimeTogetherEditFileCommand(sublime_plugin.TextCommand):
-    differ = diff_match_patch()
-
-    def run(self, edit, client, patch_text):
-        region = sublime.Region(0, self.view.size())
-        patches = self.differ.patch_fromText(patch_text)
-        result = self.differ.patch_apply(patches, self.view.substr(region))
-        new_text = result[0]
-        print(result[1])
-        self.view.replace(edit, region, new_text)

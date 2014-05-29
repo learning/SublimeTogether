@@ -1,12 +1,12 @@
-import sublime, sublime_plugin, threading, socket, struct, os, json, time
-import SublimeTogether.handlers as handlers
-from SublimeTogether.commands import in_cmd, out_cmd
+import sublime, sublime_plugin, threading, socket, struct, os, pickle
+from SublimeTogether.lib import in_cmd, out_cmd, handlers
 from SublimeTogether.diff_match_patch import diff_match_patch
 
 # SublimeTogether's socket connection
 thread = None
 chat = None
 project = None
+
 CHAT_TITLE = 'SublimeTogether Chat'
 
 def load_settings():
@@ -68,10 +68,7 @@ class SublimeTogetherThread(threading.Thread):
     def send(self, cmd, data):
         if self.socket is None:
             return
-        if type(data) is str:
-            data = data.encode()
-        if type(data) is not bytes:
-            return
+        data = pickle.dumps(data)
         # send header
         header = b'\xa9\x5f\xca'
         # send command
@@ -79,7 +76,9 @@ class SublimeTogetherThread(threading.Thread):
         # send data-length
         length = len(data).to_bytes(4, 'little')
         # send all data
-        self.socket.sendall(header + command + length + data)
+        all_data = header + command + length + data
+        # print('send_all:', all_data)
+        self.socket.sendall(all_data)
 
     def read_command(self, offset = 0):
         if self.socket is None:
@@ -94,7 +93,9 @@ class SublimeTogetherThread(threading.Thread):
                 # convert 4 bytes data to unsigned integer (I), offset 1
                 length = struct.unpack_from('I', tmp, 1)[0]
                 data = self.socket.recv(length)
+                data = pickle.loads(data)
                 key = tmp[0]
+                # print(tmp, data)
                 if key in in_cmd:
                     cmd = in_cmd[tmp[0]]
                 else:
@@ -110,7 +111,7 @@ class SublimeTogetherThread(threading.Thread):
             else:
                 self.read_command(offset + 1)
         else:
-            print('error')
+            # print('error')
             print(byte)
 
     def open_file(self, key, view):
@@ -135,19 +136,17 @@ class SublimeTogetherThread(threading.Thread):
 
     def change_selection(self, key, sels):
         path = self.paths[key]
-        data = json.dumps({
+        self.send('change_selection', {
             'path'      : path,
             'selections': sels
             })
-        self.send('change_selection', data)
 
     def edit_file(self, key, patch):
         path = self.paths[key]
-        data = json.dumps({
+        self.send('edit_file', {
             'path' : path,
             'patch': patch
             })
-        self.send('edit_file', data)
 
     def stop(self):
         self.enable = False
@@ -257,6 +256,17 @@ class SublimeTogetherFileOpen(sublime_plugin.EventListener):
                 for region in view.sel():
                     sels.append({'a': region.a, 'b': region.b})
                 thread.change_selection(view.id(), sels)
+
+class SublimeTogetherEditFileCommand(sublime_plugin.TextCommand):
+    differ = diff_match_patch()
+
+    def run(self, edit, client, patches_text):
+        region = sublime.Region(0, self.view.size())
+        patches = self.differ.patch_fromText(patches_text)
+        result = self.differ.patch_apply(patches, self.view.substr(region))
+        new_text = result[0]
+        # print(result[1])
+        self.view.replace(edit, region, new_text)
 
 project = get_project()
 
