@@ -13,7 +13,9 @@ def load_settings():
     '''Load Settings'''
     # default settings
     defaultPort = 5800
-    defaultHost = '22.18.61.174'
+    defaultHost = 'localhost'
+    defaultUser = ''
+    defaultPass = ''
 
     # load SublimeTogether settings
     s = sublime.load_settings('SublimeTogether.sublime-settings')
@@ -22,6 +24,10 @@ def load_settings():
         s.set('port', defaultPort)
     if not s.has('host'):
         s.set('host', defaultHost)
+    if not s.has('user'):
+        s.set('user', defaultUser)
+    if not s.has('pass'):
+        s.set('pass', defaultPass)
     sublime.save_settings('SublimeTogether.sublime-settings')
     return s
 
@@ -45,6 +51,8 @@ class SublimeTogetherThread(threading.Thread):
     views = {}
     paths = {}
     path_views = {}
+    path_clients = {}
+    user_name = None
     # last_sels = {}
     # Packet's head
     head = [0xd0, 0x02, 0x0f]
@@ -59,11 +67,19 @@ class SublimeTogetherThread(threading.Thread):
         self.socket = socket.socket()
         try:
             self.socket.connect((settings.get('host'), settings.get('port')))
+            self.send('login', {
+                'user': settings.get('user'),
+                'pass': settings.get('pass')
+                })
+            self.user_name = settings.get('user')
             project = get_project()
             while self.enable:
                 self.read_command()
-        except ConnectionRefusedError as err:
+        except ConnectionError as err:
             sublime.message_dialog('SublimeTogether: %s' % err)
+        finally:
+            self.socket.close()
+            print('SublimeTogether: socket closed.')
 
     def send(self, cmd, data):
         if self.socket is None:
@@ -85,8 +101,8 @@ class SublimeTogetherThread(threading.Thread):
             return
         try:
             byte = self.socket.recv(1)[0]
-        except:
-            return
+        except IndexError:
+            raise ConnectionError("Disconnected from server.")
         if byte == self.head[offset]:
             if offset is 2:
                 tmp = self.socket.recv(5)
@@ -111,7 +127,7 @@ class SublimeTogetherThread(threading.Thread):
             else:
                 self.read_command(offset + 1)
         else:
-            # print('error')
+            print('byte error:')
             print(byte)
 
     def open_file(self, key, view):
@@ -141,16 +157,16 @@ class SublimeTogetherThread(threading.Thread):
             'selections': sels
             })
 
-    def edit_file(self, key, patch):
+    def edit_file(self, key, patch, region_dict):
         path = self.paths[key]
         self.send('edit_file', {
             'path' : path,
-            'patch': patch
+            'patch': patch,
+            'region_dict': region_dict
             })
 
     def stop(self):
         self.enable = False
-        self.socket.close()
 
 class SublimeTogetherChatInsertCommand(sublime_plugin.TextCommand):
     def run(self, edit, text):
@@ -199,6 +215,10 @@ class SublimeTogetherChatSendCommand(sublime_plugin.TextCommand):
 class SublimeTogetherConnectCommand(sublime_plugin.ApplicationCommand):
     def run(self):
         global thread
+        settings = load_settings()
+        if settings.get('user') == '':
+            sublime.active_window().run_command('open_file', {"file": "${packages}/User/SublimeTogether.sublime-settings"})
+            return sublime.message_dialog('Please set up you username and password first!')
         if thread is not None and thread.is_alive():
             return sublime.message_dialog('SublimeTogether is alread started!')
         thread = SublimeTogetherThread()
@@ -212,13 +232,13 @@ class SublimeTogetherDisconnectCommand(sublime_plugin.ApplicationCommand):
         global thread
         if thread is not None and thread.is_alive():
             thread.stop()
-            thread.join()
+            # no need to join, just set thread to None
             thread = None
     def is_enabled(self):
         global thread
         return thread is not None and thread.is_alive()
 
-class SublimeTogetherFileOpen(sublime_plugin.EventListener):
+class SublimeTogetherFileListener(sublime_plugin.EventListener):
     differ = diff_match_patch()
     file_buffers = {}
     def on_load(self, view):
@@ -227,6 +247,7 @@ class SublimeTogetherFileOpen(sublime_plugin.EventListener):
             if thread and thread.is_alive():
                 self.file_buffers[view.id()] = view.substr(sublime.Region(0, view.size()))
                 thread.open_file(view.id(), view)
+
     def on_close(self, view):
         global project, thread
         if is_in_project(view):
@@ -234,6 +255,7 @@ class SublimeTogetherFileOpen(sublime_plugin.EventListener):
                 if view.id() in self.file_buffers:
                     del(self.file_buffers[view.id()])
                 thread.close_file(view.id())
+
     def on_modified(self, view):
         global project, thread
         if is_in_project(view):
@@ -245,7 +267,19 @@ class SublimeTogetherFileOpen(sublime_plugin.EventListener):
                 if view.command_history(0, True)[0] != 'sublime_together_edit_file':
                     patches = self.differ.patch_make(last_text, this_text)
                     patches_text = self.differ.patch_toText(patches)
-                    thread.edit_file(view.id(), patches_text)
+                    path = thread.paths[view.id()]
+                    client_list = thread.path_clients[path]
+                    region_dict = {}
+                    for client in client_list:
+                        # get all regions
+                        print(handlers.SELECTION_KEY.format(client))
+                        regions = view.get_regions(handlers.SELECTION_KEY.format(client))
+                        sels = []
+                        for region in regions:
+                            sels.append({'a': region.a, 'b': region.b})
+                        region_dict[client] = sels
+                    print(region_dict)
+                    thread.edit_file(view.id(), patches_text, region_dict)
                 self.file_buffers[view.id()] = this_text
 
     def on_selection_modified(self, view):
@@ -260,16 +294,29 @@ class SublimeTogetherFileOpen(sublime_plugin.EventListener):
 class SublimeTogetherEditFileCommand(sublime_plugin.TextCommand):
     differ = diff_match_patch()
 
-    def run(self, edit, client, patches_text):
+    def run(self, edit, client, patches_text, region_dict):
+        global thread
         region = sublime.Region(0, self.view.size())
         patches = self.differ.patch_fromText(patches_text)
         result = self.differ.patch_apply(patches, self.view.substr(region))
         new_text = result[0]
         # print(result[1])
         self.view.replace(edit, region, new_text)
+        # relocate selections and regions
+        region_dict = pickle.loads(region_dict)
+        for client in region_dict:
+            regions = []
+            for sel in region_dict[client]:
+                regions.append(sublime.Region(sel['a'], sel['b']))
+            if client == thread.user_name:
+                view.sel().add_all(regions)
+            else:
+                view.add_regions(SELECTION_KEY.format(client), regions,
+                    SELECTION_SCOPE.format(client), SELECTION_ICON,
+                    SELECTION_STYLE)
 
 project = get_project()
-
+load_settings()
 # check if last SublimeTogetherThread exists
 threads = threading.enumerate()
 for t in threads:
