@@ -18,7 +18,6 @@ def message_handler(arg):
 
 def update_client_list_handler(arg):
     data = arg['data']
-    print('update_client_list_handler: %s' % data)
     arg['thread'].path_clients[data['path']] = data['client_list']
 
 def change_selection_handler(arg):
@@ -30,12 +29,12 @@ def change_selection_handler(arg):
         regions = []
         for sel in sels:
             regions.append(sublime.Region(sel['a'], sel['b']))
-        print(SELECTION_KEY.format(client))
         view.add_regions(SELECTION_KEY.format(client), regions,
             SELECTION_SCOPE.format(client), SELECTION_ICON, SELECTION_STYLE)
 
 def edit_file_handler(arg):
     data = arg['data']
+    thread = arg['thread']
     if data['path'] in arg['path_views']:
         client = data['client']
         view = arg['path_views'][data['path']]
@@ -43,6 +42,17 @@ def edit_file_handler(arg):
         region_dict = data['region_dict']
         view.run_command('sublime_together_edit_file', {
             'client': client,
-            'patches_text': patches_text,
-            'region_dict': pickle.dumps(region_dict)
+            'patches_text': patches_text
             })
+        # relocate selections and regions
+        for client in region_dict:
+            regions = []
+            for sel in region_dict[client]:
+                regions.append(sublime.Region(sel['a'], sel['b']))
+            if client == thread.user_name:
+                view.sel().clear()
+                view.sel().add_all(regions)
+            else:
+                view.add_regions(SELECTION_KEY.format(client), regions,
+                    SELECTION_SCOPE.format(client), SELECTION_ICON,
+                    SELECTION_STYLE)

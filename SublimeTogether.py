@@ -53,6 +53,7 @@ class SublimeTogetherThread(threading.Thread):
     path_views = {}
     path_clients = {}
     user_name = None
+    replace_flag = False
     # last_sels = {}
     # Packet's head
     head = [0xd0, 0x02, 0x0f]
@@ -93,7 +94,6 @@ class SublimeTogetherThread(threading.Thread):
         length = len(data).to_bytes(4, 'little')
         # send all data
         all_data = header + command + length + data
-        # print('send_all:', all_data)
         self.socket.sendall(all_data)
 
     def read_command(self, offset = 0):
@@ -111,7 +111,6 @@ class SublimeTogetherThread(threading.Thread):
                 data = self.socket.recv(length)
                 data = pickle.loads(data)
                 key = tmp[0]
-                # print(tmp, data)
                 if key in in_cmd:
                     cmd = in_cmd[tmp[0]]
                 else:
@@ -127,7 +126,7 @@ class SublimeTogetherThread(threading.Thread):
             else:
                 self.read_command(offset + 1)
         else:
-            print('byte error:')
+            print('SublimeTogether - byte error:')
             print(byte)
 
     def open_file(self, key, view):
@@ -139,7 +138,6 @@ class SublimeTogetherThread(threading.Thread):
         self.send('open_file', path)
 
     def close_file(self, key):
-        # print('close_file')
         if key in self.paths:
             path = self.paths[key]
             self.send('close_file', path)
@@ -147,7 +145,7 @@ class SublimeTogetherThread(threading.Thread):
             del(self.path_views[path])
             del(self.paths[key])
         else:
-            print('key: %s' % key)
+            print('SublimeTogether.close_file unkonwn-key: %s' % key)
             print(self.paths)
 
     def change_selection(self, key, sels):
@@ -272,13 +270,11 @@ class SublimeTogetherFileListener(sublime_plugin.EventListener):
                     region_dict = {}
                     for client in client_list:
                         # get all regions
-                        print(handlers.SELECTION_KEY.format(client))
                         regions = view.get_regions(handlers.SELECTION_KEY.format(client))
                         sels = []
                         for region in regions:
                             sels.append({'a': region.a, 'b': region.b})
                         region_dict[client] = sels
-                    print(region_dict)
                     thread.edit_file(view.id(), patches_text, region_dict)
                 self.file_buffers[view.id()] = this_text
 
@@ -286,34 +282,29 @@ class SublimeTogetherFileListener(sublime_plugin.EventListener):
         global project, thread
         if is_in_project(view):
             if thread and thread.is_alive():
-                sels = []
-                for region in view.sel():
-                    sels.append({'a': region.a, 'b': region.b})
-                thread.change_selection(view.id(), sels)
+                if thread.replace_flag:
+                    # set flag to False, see SublimeTogetherEditFileCommand.run
+                    thread.replace_flag = False
+                else:
+                    sels = []
+                    for region in view.sel():
+                        sels.append({'a': region.a, 'b': region.b})
+                    thread.change_selection(view.id(), sels)
 
 class SublimeTogetherEditFileCommand(sublime_plugin.TextCommand):
     differ = diff_match_patch()
 
-    def run(self, edit, client, patches_text, region_dict):
+    def run(self, edit, client, patches_text):
         global thread
         region = sublime.Region(0, self.view.size())
         patches = self.differ.patch_fromText(patches_text)
         result = self.differ.patch_apply(patches, self.view.substr(region))
         new_text = result[0]
-        # print(result[1])
+        # if modified text is after current cursor,
+        # text replace will cause an incorrect on_selection_modified event
+        # so set a flag to true
+        thread.replace_flag = True
         self.view.replace(edit, region, new_text)
-        # relocate selections and regions
-        region_dict = pickle.loads(region_dict)
-        for client in region_dict:
-            regions = []
-            for sel in region_dict[client]:
-                regions.append(sublime.Region(sel['a'], sel['b']))
-            if client == thread.user_name:
-                view.sel().add_all(regions)
-            else:
-                view.add_regions(SELECTION_KEY.format(client), regions,
-                    SELECTION_SCOPE.format(client), SELECTION_ICON,
-                    SELECTION_STYLE)
 
 project = get_project()
 load_settings()
